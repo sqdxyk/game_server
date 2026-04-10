@@ -71,6 +71,7 @@ private:
 		std::unordered_map<int, int> matched_users;
 		std::unordered_map<int, int> turn_owner;
 		std::unordered_map<int, time_t> game_turn_start;
+		std::function<void(int, const std::string&)> dispatch_send;
 	};
 
 	class sub_reactor {

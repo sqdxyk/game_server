@@ -79,6 +79,7 @@ void reactor::sub_reactor::notify_write_interest(int fd) {
 
 void reactor::sub_reactor::enqueue_send(int fd, const std::string& line) {
     connection_t* conn = nullptr;
+    int owner_worker = -1;
     {
         MutexGuard lock(connlist_mutex);
         auto it = shared_state->conn_list.find(fd);
@@ -86,6 +87,15 @@ void reactor::sub_reactor::enqueue_send(int fd, const std::string& line) {
             return;
         }
         conn = &it->second;
+        owner_worker = it->second.owner_worker;
+    }
+
+    if (owner_worker != worker_id) {
+        auto dispatcher = shared_state->dispatch_send;
+        if (dispatcher) {
+            dispatcher(fd, line);
+        }
+        return;
     }
 
     {
@@ -628,6 +638,9 @@ reactor::reactor(int port, int worker_count)
     for (int i = 0; i < this->worker_count; ++i) {
         workers.emplace_back(std::make_unique<sub_reactor>(i, shared_state));
     }
+    shared_state->dispatch_send = [this](int fd, const std::string& line) {
+        this->enqueue_send_to_fd(fd, line);
+    };
 }
 
 reactor::~reactor() {
