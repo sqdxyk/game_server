@@ -89,7 +89,7 @@ void reactor::sub_reactor::enqueue_send(int fd, const std::string& line) {
     }
 
     {
-        std::lock_guard<std::mutex> qlock(conn->send_mutex);
+        MutexGuard qlock(conn->send_mutex);
         conn->send_queue.emplace_back(line + "\n");
     }
     notify_write_interest(fd);
@@ -536,7 +536,7 @@ int reactor::sub_reactor::response(int fd) {
             conn = &it->second;
         }
 
-        std::lock_guard<std::mutex> qlock(conn->send_mutex);
+        MutexGuard qlock(conn->send_mutex);
         if (conn->send_queue.empty()) {
             set_event(fd, EPOLLIN, 0);
             return 0;
