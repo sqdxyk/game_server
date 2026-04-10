@@ -243,6 +243,7 @@ int reactor::sub_reactor::request(int fd) {
         std::string content = message.substr(comma_pos + 1);
 
         if (type == "chat") {
+            std::cout<<"enter"<<std::endl;
             std::string sender = "guest";
             std::vector<int> targets;
             {
@@ -262,7 +263,7 @@ int reactor::sub_reactor::request(int fd) {
                 }
             }
 			std::cout << sender << ": " << content << std::endl;
-            
+            std::cout<<"enter1"<<std::endl;
             std::cout << "chat route from fd=" << fd << " user=" << sender
                       << " targets=" << targets.size() << std::endl;
             for (int to_fd : targets) {
@@ -283,7 +284,7 @@ int reactor::sub_reactor::request(int fd) {
             }
         } else if (type == "login") {
             std::string temp_username;
-            std::string temp_pwd;
+            std::string temp_pwd;      
 
             if (content.rfind("id:", 0) == 0) {
                 size_t cpos = content.find(',', 3);
