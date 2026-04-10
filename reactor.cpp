@@ -243,7 +243,6 @@ int reactor::sub_reactor::request(int fd) {
         std::string content = message.substr(comma_pos + 1);
 
         if (type == "chat") {
-            std::cout<<"enter"<<std::endl;
             std::string sender = "guest";
             std::vector<int> targets;
             {
@@ -262,7 +261,7 @@ int reactor::sub_reactor::request(int fd) {
                     targets.push_back(to_fd);
                 }
             }
-			std::cout << sender << ": " << content << std::endl;
+			//std::cout << sender << ": " << content << std::endl;
             std::cout<<"enter1"<<std::endl;
             std::cout << "chat route from fd=" << fd << " user=" << sender
                       << " targets=" << targets.size() << std::endl;
