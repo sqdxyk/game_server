@@ -262,6 +262,20 @@ int reactor::sub_reactor::request(int fd) {
                 }
             }
 			std::cout << sender << ": " << content << std::endl;
+            
+            std::cout << "chat route from fd=" << fd << " user=" << sender
+                      << " targets=" << targets.size() << std::endl;
+            for (int to_fd : targets) {
+                int owner = -1;
+                {
+                    MutexGuard lock(connlist_mutex);
+                    auto it = shared_state->conn_list.find(to_fd);
+                    if (it != shared_state->conn_list.end()) {
+                        owner = it->second.owner_worker;
+                    }
+                }
+                std::cout << "  -> to fd=" << to_fd << " owner_worker=" << owner << std::endl;
+            }
 
             std::string msg = "chat," + sender + ": " + content;
             for (int to_fd : targets) {
