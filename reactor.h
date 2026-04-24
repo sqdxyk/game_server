@@ -7,13 +7,12 @@
 #include <vector>
 #include <string>
 #include <deque>
-#include <cstring>
 #include <map>
 #include <unordered_set>
 #include <unordered_map>
 #include <atomic>
-#include <mysql/mysql.h>
-#include "Locker.h"
+#include <ctime>
+#include <mutex>
 
 const int buffer_len = 2048;
 
@@ -61,7 +60,8 @@ private:
 		std::function<int(int)> send_callback;
 
 		enum State { RECV, SEND } state;
-		connection_t() : fd(-1), owner_worker(-1), rlen(0), wlen(0), send_offset(0), client_port(0), is_start_game(false), isplaying(false), state(RECV) {}
+		connection_t() : fd(-1), owner_worker(-1), rlen(0), wlen(0), send_offset(0),
+		client_port(0), is_start_game(false), isplaying(false), state(RECV) {}
 	};
 
 	struct shared_state_t {

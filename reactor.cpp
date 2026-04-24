@@ -1,5 +1,4 @@
 #include <iostream>
-#include <fstream>
 #include <cstring>
 #include <sstream>
 #include <netinet/in.h>
@@ -7,10 +6,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <pthread.h>
-#include <sys/poll.h>
 #include <sys/epoll.h>
-#include <sys/stat.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -24,7 +20,6 @@
 #include "reactor.h"
 #include "Logger.h"
 #include "Locker.h"
-#include "c_time.h"
 #include "c_thread_pool.h"
 #include "c_mysql_pool.h"
 
