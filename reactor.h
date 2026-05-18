@@ -14,6 +14,8 @@
 #include <ctime>
 #include <mutex>
 
+#include "message_dispatcher.h"
+
 const int buffer_len = 2048;
 
 #define HEAD 1
@@ -72,6 +74,7 @@ private:
 		std::unordered_map<int, int> turn_owner;
 		std::unordered_map<int, time_t> game_turn_start;
 		std::function<void(int, const std::string&)> dispatch_send;
+		MessageDispatcher dispatcher;
 	};
 
 	class sub_reactor {

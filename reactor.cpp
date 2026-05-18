@@ -22,21 +22,14 @@
 #include "Locker.h"
 #include "c_thread_pool.h"
 #include "c_mysql_pool.h"
+#include "protocol.h"
+#include "handlers/auth_handler.h"
+#include "handlers/chat_handler.h"
+#include "handlers/game_handler.h"
 
 using namespace std;
 
 namespace {
-
-bool all_heads_destroyed(const std::vector<std::vector<int>>& grids) {
-    for (int i = 0; i < 15; ++i) {
-        for (int j = 0; j < 15; ++j) {
-            if (grids[i][j] == HEAD) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
 
 int set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -95,7 +88,7 @@ void reactor::sub_reactor::enqueue_send(int fd, const std::string& line) {
 
     {
         MutexGuard qlock(conn->send_mutex);
-        conn->send_queue.emplace_back(line + "\n");
+        conn->send_queue.emplace_back(encode_frame(line));
     }
     notify_write_interest(fd);
 }
@@ -213,315 +206,28 @@ int reactor::sub_reactor::request(int fd) {
         return -1;
     }
 
-    std::vector<std::string> messages;
-    {
-        size_t pos = 0;
-        while (true) {
-            size_t newline = conn->in_buffer.find('\n', pos);
-            if (newline == std::string::npos) {
-                conn->in_buffer.erase(0, pos);
-                break;
-            }
-            messages.emplace_back(conn->in_buffer.substr(pos, newline - pos));
-            pos = newline + 1;
-        }
-    }
+    // Decode length-prefixed frames and dispatch to registered handlers
+    auto messages = decode_frames(conn->in_buffer);
 
-    for (const std::string& message : messages) {
+    HandlerContext ctx;
+    ctx.state = shared_state;
+    ctx.send = [this](int target_fd, const std::string& line) {
+        this->enqueue_send(target_fd, line);
+    };
+
+    for (const auto& message : messages) {
         size_t comma_pos = message.find(',');
         if (comma_pos == std::string::npos) {
-			std::cerr << "Invalid message format: " << message << std::endl;
+            std::cerr << "Invalid message format: " << message << std::endl;
             continue;
         }
 
         std::string type = message.substr(0, comma_pos);
         std::string content = message.substr(comma_pos + 1);
+        ctx.fd = fd;
 
-        if (type == "chat") {
-            std::string sender = "guest";
-            std::vector<int> targets;
-            {
-                MutexGuard lock(connlist_mutex);
-                auto it = shared_state->conn_list.find(fd);
-                if (it != shared_state->conn_list.end() && !it->second.username.empty()) {
-                    sender = it->second.username;
-                }
-
-                for (auto& kv : shared_state->conn_list) {
-                    int to_fd = kv.first;
-                    connection_t& client = kv.second;
-                    if (to_fd <= 0 || to_fd == fd) continue;
-                    if (client.fd != to_fd) continue;
-                    if (client.username.empty()) continue;
-                    targets.push_back(to_fd);
-                }
-            }
-			std::cout << sender << ": " << content << std::endl;
-            std::string msg = "chat," + sender + ": " + content;
-            for (int to_fd : targets) {
-                enqueue_send(to_fd, msg);
-            }
-        } else if (type == "login") {
-            std::string temp_username;
-            std::string temp_pwd;      
-
-            if (content.rfind("id:", 0) == 0) {
-                size_t cpos = content.find(',', 3);
-                if (cpos != std::string::npos && content.rfind("pwd:", cpos + 1) == cpos + 1) {
-                    temp_username = content.substr(3, cpos - 3);
-                    temp_pwd = content.substr(cpos + 5);
-                }
-            }
-
-            if (temp_username.empty() || temp_pwd.empty()) {
-				ThreadPool::instance().submit([=]() { log_warn("login failed for %s: invalid format or already logged in", temp_username.c_str()); });
-                enqueue_send(fd, "login_fail");
-                continue;
-            }
-
-            bool can_login = true;
-            {
-                std::scoped_lock lock(connlist_mutex, loginusers_mutex);
-                auto conn_it = shared_state->conn_list.find(fd);
-                if (conn_it == shared_state->conn_list.end()) {
-                    continue;
-                }
-                if (!conn_it->second.username.empty() || shared_state->logined_username.count(temp_username)) {
-                    can_login = false;
-                }
-            }
-
-            if (!can_login) {
-				ThreadPool::instance().submit([=]() { log_warn("login failed for %s: invalid format or already logged in", temp_username.c_str()); });
-                enqueue_send(fd, "login_fail");
-                continue;
-            }
-
-            MYSQL* mysql_conn = MySQLPool::instance().get();
-            bool ok = false;
-
-            if (mysql_conn) {
-                char sql1[512];
-                snprintf(sql1, sizeof(sql1), "SELECT password FROM t_user WHERE username='%s' LIMIT 1", temp_username.c_str());
-                if (mysql_query(mysql_conn, sql1)) {
-					ThreadPool::instance().submit([=]() { log_error("mysql query failed: %s", mysql_error(mysql_conn)); });
-					std::cerr << "query failed: " << mysql_error(mysql_conn) << '\n';
-					MySQLPool::instance().release(mysql_conn);
-					enqueue_send(fd, "login_fail");
-					continue;
-				}
-
-				{
-                    MYSQL_RES* res = mysql_store_result(mysql_conn);
-                    bool exists = (res && mysql_num_rows(res) > 0);
-                    if (exists) {
-                        MYSQL_ROW row = mysql_fetch_row(res);
-                        std::string exist_pwd = row && row[0] ? row[0] : "";
-                        ok = (exist_pwd == temp_pwd);
-						if (!ok) {
-							ThreadPool::instance().submit([=]() { log_warn("password mismatch for user %s", temp_username.c_str()); });
-						}
-                    } else {
-                        char sql2[512];
-                        snprintf(sql2, sizeof(sql2), "INSERT INTO t_user(username, password) VALUES('%s','%s')", temp_username.c_str(), temp_pwd.c_str());
-						if (mysql_query(mysql_conn, sql2)) {
-							ThreadPool::instance().submit([=]() { log_error("mysql insert failed: %s", mysql_error(mysql_conn)); });
-							std::cerr << "insert failed: " << mysql_error(mysql_conn) << '\n';
-							MySQLPool::instance().release(mysql_conn);
-							enqueue_send(fd, "login_fail");
-							continue;
-						}
-						ok = true;
-                    }
-                    if (res) {
-                        mysql_free_result(res);
-                    }
-                }
-                MySQLPool::instance().release(mysql_conn);
-            }
-
-            if (!ok) {
-                enqueue_send(fd, "login_fail");
-                continue;
-            }
-
-            bool login_ok = false;
-            {
-                std::scoped_lock lock(connlist_mutex, loginusers_mutex);
-                auto conn_it = shared_state->conn_list.find(fd);
-                if (conn_it != shared_state->conn_list.end() &&
-                    conn_it->second.username.empty() &&
-                    !shared_state->logined_username.count(temp_username)) {
-                    conn_it->second.username = temp_username;
-                    conn_it->second.pwd = temp_pwd;
-                    shared_state->logined_username.insert(temp_username);
-                    login_ok = true;
-                }
-            }
-
-            enqueue_send(fd, login_ok ? "login_ok" : "login_fail");
-        } else if (type == "ready") {
-            std::scoped_lock lock(connlist_mutex, game_state_mutex);
-            auto conn_it = shared_state->conn_list.find(fd);
-            if (conn_it == shared_state->conn_list.end()) {
-                continue;
-            }
-
-            if (content == "ok") {
-				cout << fd << "match begin" << endl;
-                conn_it->second.grids.assign(15, std::vector<int>(15, 0));
-                shared_state->readyfd_users.insert(fd);
-            } else {
-				cout << fd << "match cancel" << endl;
-                shared_state->readyfd_users.erase(fd);
-            }
-        } else if (type == "init") {
-            MutexGuard lock(connlist_mutex);
-            auto conn_it = shared_state->conn_list.find(fd);
-            if (conn_it == shared_state->conn_list.end()) {
-                continue;
-            }
-
-            if (!conn_it->second.is_start_game) {
-                std::istringstream stream(content);
-                std::string token;
-                int first = 0;
-                bool isY = false;
-                int flag = 0;
-
-                while (std::getline(stream, token, ',')) {
-                    if (token.empty()) {
-                        continue;
-                    }
-                    if (isY) {
-                        int y = std::stoi(token);
-                        conn_it->second.grids[first][y] = (flag % 10 == 0) ? HEAD : BODY;
-                        ++flag;
-                        isY = false;
-                    } else {
-                        first = std::stoi(token);
-                        isY = true;
-                    }
-                }
-                conn_it->second.is_start_game = true;
-            }
-        } else if (type == "attack") {
-            std::vector<std::pair<int, std::string>> out_msgs;
-            {
-                std::scoped_lock lock(connlist_mutex, game_state_mutex);
-
-                auto mit = shared_state->matched_users.find(fd);
-                if (mit == shared_state->matched_users.end()) {
-                    continue;
-                }
-                int rival_fd = mit->second;
-                if (shared_state->turn_owner[fd] != fd) {
-                    continue;
-                }
-
-                auto rival_it = shared_state->conn_list.find(rival_fd);
-                auto self_it = shared_state->conn_list.find(fd);
-                if (rival_it == shared_state->conn_list.end() || self_it == shared_state->conn_list.end()) {
-                    continue;
-                }
-
-                auto& rival_grids = rival_it->second.grids;
-                std::istringstream stream(content);
-                std::string token;
-                int first = 0;
-                bool isY = false;
-
-                while (std::getline(stream, token, ',')) {
-                    if (token.empty()) {
-                        continue;
-                    }
-                    if (isY) {
-                        int y = std::stoi(token);
-                        std::string rs;
-                        if (rival_grids[first][y] == BODY) {
-                            rival_grids[first][y] = HIT_BODY;
-                            rs = "body";
-                        } else if (rival_grids[first][y] == HEAD) {
-                            rival_grids[first][y] = HIT_HEAD;
-                            rs = "head";
-                        } else {
-                            rival_grids[first][y] = HIT_EMPTY;
-                            rs = "empty";
-                        }
-                        out_msgs.emplace_back(fd, "hit," + rs + "," + std::to_string(first) + "," + std::to_string(y));
-                        out_msgs.emplace_back(rival_fd, "behited," + rs + "," + std::to_string(first) + "," + std::to_string(y));
-                        isY = false;
-                    } else {
-                        first = std::stoi(token);
-                        isY = true;
-                    }
-                }
-
-                if (all_heads_destroyed(rival_grids)) {
-                    out_msgs.emplace_back(fd, "gameover,win,headshot");
-                    out_msgs.emplace_back(rival_fd, "gameover,lose,headshot");
-
-                    self_it->second.grids.clear();
-                    rival_it->second.grids.clear();
-                    self_it->second.is_start_game = false;
-                    self_it->second.isplaying = false;
-                    rival_it->second.is_start_game = false;
-                    rival_it->second.isplaying = false;
-
-                    shared_state->matched_users.erase(fd);
-                    shared_state->matched_users.erase(rival_fd);
-                    shared_state->turn_owner.erase(fd);
-                    shared_state->turn_owner.erase(rival_fd);
-                    int min_fd = std::min(fd, rival_fd);
-                    shared_state->game_turn_start.erase(min_fd);
-                } else {
-                    shared_state->turn_owner[fd] = rival_fd;
-                    shared_state->turn_owner[rival_fd] = rival_fd;
-
-                    int min_fd = std::min(fd, rival_fd);
-                    shared_state->game_turn_start[min_fd] = time(nullptr);
-
-                    std::string turn_msg = "turn," + rival_it->second.username;
-                    out_msgs.emplace_back(fd, turn_msg);
-                    out_msgs.emplace_back(rival_fd, turn_msg);
-                }
-            }
-
-            for (const auto& item : out_msgs) {
-                enqueue_send(item.first, item.second);
-            }
-        } else if (type == "timeout") {
-            std::vector<std::pair<int, std::string>> out_msgs;
-            {
-                std::scoped_lock lock(connlist_mutex, game_state_mutex);
-                auto mit = shared_state->matched_users.find(fd);
-                if (mit == shared_state->matched_users.end()) {
-                    continue;
-                }
-                int rival_fd = mit->second;
-
-                auto rival_it = shared_state->conn_list.find(rival_fd);
-                if (rival_it == shared_state->conn_list.end()) {
-                    continue;
-                }
-
-                shared_state->turn_owner[fd] = rival_fd;
-                shared_state->turn_owner[rival_fd] = rival_fd;
-                int min_fd = std::min(fd, rival_fd);
-                shared_state->game_turn_start[min_fd] = time(nullptr);
-
-                std::string turn_msg = "turn," + rival_it->second.username;
-                out_msgs.emplace_back(fd, turn_msg);
-                out_msgs.emplace_back(rival_fd, turn_msg);
-                out_msgs.emplace_back(fd, "timeout");
-                out_msgs.emplace_back(rival_fd, "timeout");
-            }
-
-            for (const auto& item : out_msgs) {
-                enqueue_send(item.first, item.second);
-            }
-		} else {
-			std::cout << "Unknown message type: " << type << std::endl;
+        if (!shared_state->dispatcher.dispatch(ctx, type, content)) {
+            std::cout << "Unknown message type: " << type << std::endl;
         }
     }
 
@@ -635,6 +341,11 @@ reactor::reactor(int port, int worker_count)
     shared_state->dispatch_send = [this](int fd, const std::string& line) {
         this->enqueue_send_to_fd(fd, line);
     };
+
+    // Register all message handlers
+    register_auth_handlers(shared_state->dispatcher);
+    register_chat_handlers(shared_state->dispatcher);
+    register_game_handlers(shared_state->dispatcher);
 }
 
 reactor::~reactor() {
