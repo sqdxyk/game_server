@@ -24,7 +24,47 @@ const int buffer_len = 2048;
 #define HIT_HEAD 4
 #define HIT_EMPTY 5
 
-//MYSQL* connect_mysql();
+struct connection_t {
+	int fd;
+	int owner_worker;
+
+	std::vector<char> rbuffer;
+	int rlen;
+	std::vector<char> wbuffer;
+	int wlen;
+	std::string in_buffer;
+	std::deque<std::string> send_queue;
+	size_t send_offset;
+	std::mutex send_mutex;
+
+	std::string ip;
+	int client_port;
+	std::string username;
+	std::string pwd;
+
+	bool is_start_game;
+	bool isplaying;
+
+	std::vector<std::vector<int>> grids;
+
+	std::function<int(int)> recv_callback;
+	std::function<int(int)> send_callback;
+
+	enum State { RECV, SEND } state;
+	connection_t() : fd(-1), owner_worker(-1), rlen(0), wlen(0), send_offset(0),
+	client_port(0), is_start_game(false), isplaying(false), state(RECV) {}
+};
+
+struct shared_state_t {
+	std::map<int, connection_t> conn_list;
+	std::unordered_set<std::string> logined_username;
+	std::unordered_set<int> readyfd_users;
+	std::unordered_map<int, int> matched_users;
+	std::unordered_map<int, int> turn_owner;
+	std::unordered_map<int, time_t> game_turn_start;
+	std::function<void(int, const std::string&)> dispatch_send;
+	MessageDispatcher dispatcher;
+};
 
 class reactor {
 public:
@@ -35,48 +75,6 @@ public:
 	void run();
 
 private:
-	struct connection_t {
-		int fd;
-		int owner_worker;
-
-		std::vector<char> rbuffer;
-		int rlen;
-		std::vector<char> wbuffer;
-		int wlen;
-		std::string in_buffer;
-		std::deque<std::string> send_queue;
-		size_t send_offset;
-		std::mutex send_mutex;
-
-		std::string ip;
-		int client_port;
-		std::string username;
-		std::string pwd;
-
-		bool is_start_game;
-		bool isplaying;
-
-		std::vector<std::vector<int>> grids;
-
-		std::function<int(int)> recv_callback;
-		std::function<int(int)> send_callback;
-
-		enum State { RECV, SEND } state;
-		connection_t() : fd(-1), owner_worker(-1), rlen(0), wlen(0), send_offset(0),
-		client_port(0), is_start_game(false), isplaying(false), state(RECV) {}
-	};
-
-	struct shared_state_t {
-		std::map<int, connection_t> conn_list;
-		std::unordered_set<std::string> logined_username;
-		std::unordered_set<int> readyfd_users;
-		std::unordered_map<int, int> matched_users;
-		std::unordered_map<int, int> turn_owner;
-		std::unordered_map<int, time_t> game_turn_start;
-		std::function<void(int, const std::string&)> dispatch_send;
-		MessageDispatcher dispatcher;
-	};
-
 	class sub_reactor {
 	public:
 		sub_reactor(int id, std::shared_ptr<shared_state_t> state);
@@ -126,7 +124,5 @@ private:
 	int port;
 	int epfd;
 };
-
-
 
 #endif
