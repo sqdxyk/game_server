@@ -523,7 +523,9 @@ void reactor::check_matched_players() {
             auto ib = shared_state->conn_list.find(b);
             if (ia == shared_state->conn_list.end() || ib == shared_state->conn_list.end()) continue;
 
-            std::string gt = shared_state->match_game_type[a];
+            auto gt_find = shared_state->match_game_type.find(a);
+            if (gt_find == shared_state->match_game_type.end()) continue;
+            std::string gt = gt_find->second;
 
             if (gt == "gomoku") {
                 // Gomoku: no init needed, start immediately

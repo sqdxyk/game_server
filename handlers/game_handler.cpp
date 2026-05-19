@@ -143,7 +143,8 @@ static void handle_attack(const HandlerContext& ctx, const std::string& content)
         }
 
         // Check if this is a splitbrain match
-        bool is_splitbrain = (ctx.state->match_game_type[ctx.fd] == "splitbrain");
+        auto gt_it = ctx.state->match_game_type.find(ctx.fd);
+        bool is_splitbrain = (gt_it != ctx.state->match_game_type.end() && gt_it->second == "splitbrain");
 
         if (is_splitbrain) {
             // Mark bombing done for this turn
@@ -219,8 +220,9 @@ static void handle_timeout(const HandlerContext& ctx, const std::string& /*conte
         auto self_it = ctx.state->conn_list.find(ctx.fd);
         if (rival_it == ctx.state->conn_list.end() || self_it == ctx.state->conn_list.end()) return;
 
-        bool is_splitbrain = (ctx.state->match_game_type[ctx.fd] == "splitbrain");
-        bool is_gomoku = (ctx.state->match_game_type[ctx.fd] == "gomoku");
+        auto gt_it2 = ctx.state->match_game_type.find(ctx.fd);
+        bool is_splitbrain = (gt_it2 != ctx.state->match_game_type.end() && gt_it2->second == "splitbrain");
+        bool is_gomoku = (gt_it2 != ctx.state->match_game_type.end() && gt_it2->second == "gomoku");
 
         if (is_splitbrain) {
             // Timeout in splitbrain: loser loses everything

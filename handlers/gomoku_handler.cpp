@@ -139,7 +139,8 @@ static void handle_gomoku_splitbrain(const HandlerContext& ctx, const std::strin
         if (mit == ctx.state->matched_users.end()) return;
         int rival_fd = mit->second;
 
-        if (ctx.state->match_game_type[ctx.fd] != "splitbrain") return;
+        auto gt_it = ctx.state->match_game_type.find(ctx.fd);
+        if (gt_it == ctx.state->match_game_type.end() || gt_it->second != "splitbrain") return;
         if (ctx.state->turn_owner[ctx.fd] != ctx.fd) return;
 
         int min_fd = std::min(ctx.fd, rival_fd);
