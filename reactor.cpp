@@ -480,16 +480,8 @@ void reactor::match_players() {
         shared_state->match_game_type[fd1] = game_type;
         shared_state->match_game_type[fd2] = game_type;
 
-        // Setup gomoku-specific state
-        if (game_type == "gomoku" || game_type == "splitbrain") {
-            shared_state->gomoku_stone_color[fd1] = GOMOKU_BLACK;
-            shared_state->gomoku_stone_color[fd2] = GOMOKU_WHITE;
-            // First player gets black
-            if (first_player == fd2) {
-                shared_state->gomoku_stone_color[fd2] = GOMOKU_BLACK;
-                shared_state->gomoku_stone_color[fd1] = GOMOKU_WHITE;
-            }
-        }
+        // Setup gomoku/splitbrain state
+        // (stone color is determined by move order, no per-player color needed)
 
         // Setup splitbrain action tracking
         if (game_type == "splitbrain") {

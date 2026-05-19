@@ -76,7 +76,12 @@ static void handle_gomoku(const HandlerContext& ctx, const std::string& content)
         // Check position is empty
         if (board[x][y] != GOMOKU_EMPTY) return;
 
-        int color = ctx.state->gomoku_stone_color[ctx.fd];
+        // Determine color from existing stone count: even=BLACK, odd=WHITE
+        int stone_count = 0;
+        for (int i = 0; i < 15; ++i)
+            for (int j = 0; j < 15; ++j)
+                if (board[i][j] != GOMOKU_EMPTY) ++stone_count;
+        int color = (stone_count % 2 == 0) ? GOMOKU_BLACK : GOMOKU_WHITE;
         board[x][y] = color;
 
         std::string color_str = (color == GOMOKU_BLACK) ? "black" : "white";
@@ -145,7 +150,12 @@ static void handle_gomoku_splitbrain(const HandlerContext& ctx, const std::strin
 
         if (board[x][y] != GOMOKU_EMPTY) return;
 
-        int color = ctx.state->gomoku_stone_color[ctx.fd];
+        // Determine color from existing stone count: even=BLACK, odd=WHITE
+        int stone_count = 0;
+        for (int i = 0; i < 15; ++i)
+            for (int j = 0; j < 15; ++j)
+                if (board[i][j] != GOMOKU_EMPTY) ++stone_count;
+        int color = (stone_count % 2 == 0) ? GOMOKU_BLACK : GOMOKU_WHITE;
         board[x][y] = color;
 
         std::string color_str = (color == GOMOKU_BLACK) ? "black" : "white";
