@@ -24,6 +24,10 @@ const int buffer_len = 2048;
 #define HIT_HEAD 4
 #define HIT_EMPTY 5
 
+#define GOMOKU_EMPTY 0
+#define GOMOKU_BLACK 1
+#define GOMOKU_WHITE 2
+
 struct connection_t {
 	int fd;
 	int owner_worker;
@@ -59,9 +63,17 @@ struct shared_state_t {
 	std::map<int, connection_t> conn_list;
 	std::unordered_set<std::string> logined_username;
 	std::unordered_set<int> readyfd_users;
+	std::unordered_map<int, std::string> ready_game_types;  // fd → "bombing"/"gomoku"/"splitbrain"
 	std::unordered_map<int, int> matched_users;
+	std::unordered_map<int, std::string> match_game_type;   // fd → game type for active match
 	std::unordered_map<int, int> turn_owner;
 	std::unordered_map<int, time_t> game_turn_start;
+	// Gomoku state (keyed by min_fd of match)
+	std::unordered_map<int, std::vector<std::vector<int>>> gomoku_boards;
+	std::unordered_map<int, int> gomoku_stone_color;  // fd → GOMOKU_BLACK / GOMOKU_WHITE
+	// Split-brain action tracking
+	std::unordered_map<int, bool> splitbrain_bomb_done;
+	std::unordered_map<int, bool> splitbrain_gomoku_done;
 	std::function<void(int, const std::string&)> dispatch_send;
 	MessageDispatcher dispatcher;
 };

@@ -26,6 +26,7 @@
 #include "handlers/auth_handler.h"
 #include "handlers/chat_handler.h"
 #include "handlers/game_handler.h"
+#include "handlers/gomoku_handler.h"
 
 using namespace std;
 
@@ -141,6 +142,7 @@ void reactor::sub_reactor::cleanup_connection(int fd) {
         }
 
         shared_state->readyfd_users.erase(fd);
+        shared_state->ready_game_types.erase(fd);
 
         auto mit = shared_state->matched_users.find(fd);
         if (mit != shared_state->matched_users.end()) {
@@ -152,11 +154,20 @@ void reactor::sub_reactor::cleanup_connection(int fd) {
                 rival_it->second.grids.clear();
             }
 
+            int min_fd = std::min(fd, rival_fd);
             shared_state->matched_users.erase(fd);
             shared_state->matched_users.erase(rival_fd);
             shared_state->turn_owner.erase(fd);
             shared_state->turn_owner.erase(rival_fd);
-            int min_fd = std::min(fd, rival_fd);
+            shared_state->match_game_type.erase(fd);
+            shared_state->match_game_type.erase(rival_fd);
+            shared_state->gomoku_stone_color.erase(fd);
+            shared_state->gomoku_stone_color.erase(rival_fd);
+            shared_state->splitbrain_bomb_done.erase(fd);
+            shared_state->splitbrain_gomoku_done.erase(fd);
+            shared_state->splitbrain_bomb_done.erase(rival_fd);
+            shared_state->splitbrain_gomoku_done.erase(rival_fd);
+            shared_state->gomoku_boards.erase(min_fd);
             shared_state->game_turn_start.erase(min_fd);
         }
 
@@ -346,6 +357,7 @@ reactor::reactor(int port, int worker_count)
     register_auth_handlers(shared_state->dispatcher);
     register_chat_handlers(shared_state->dispatcher);
     register_game_handlers(shared_state->dispatcher);
+    register_gomoku_handlers(shared_state->dispatcher);
 }
 
 reactor::~reactor() {
@@ -427,6 +439,7 @@ void reactor::match_players() {
     int fd1 = -1;
     int fd2 = -1;
     int first_player = -1;
+    std::string game_type;
     std::string name1;
     std::string name2;
 
@@ -436,9 +449,26 @@ void reactor::match_players() {
             return;
         }
 
-        auto it = shared_state->readyfd_users.begin();
-        fd1 = *it++;
-        fd2 = *it;
+        // Find two players with the same game type
+        for (auto it1 = shared_state->readyfd_users.begin(); it1 != shared_state->readyfd_users.end(); ++it1) {
+            auto type_it = shared_state->ready_game_types.find(*it1);
+            if (type_it == shared_state->ready_game_types.end()) continue;
+            const std::string& type1 = type_it->second;
+
+            for (auto it2 = std::next(it1); it2 != shared_state->readyfd_users.end(); ++it2) {
+                auto type_it2 = shared_state->ready_game_types.find(*it2);
+                if (type_it2 == shared_state->ready_game_types.end()) continue;
+                if (type_it2->second == type1) {
+                    fd1 = *it1;
+                    fd2 = *it2;
+                    game_type = type1;
+                    break;
+                }
+            }
+            if (fd1 != -1) break;
+        }
+
+        if (fd1 == -1) return;  // no matching pair found
 
         bool first_is_fd1 = (rand() % 2 == 0);
         first_player = first_is_fd1 ? fd1 : fd2;
@@ -447,6 +477,27 @@ void reactor::match_players() {
         shared_state->matched_users[fd2] = fd1;
         shared_state->turn_owner[fd1] = first_player;
         shared_state->turn_owner[fd2] = first_player;
+        shared_state->match_game_type[fd1] = game_type;
+        shared_state->match_game_type[fd2] = game_type;
+
+        // Setup gomoku-specific state
+        if (game_type == "gomoku" || game_type == "splitbrain") {
+            shared_state->gomoku_stone_color[fd1] = GOMOKU_BLACK;
+            shared_state->gomoku_stone_color[fd2] = GOMOKU_WHITE;
+            // First player gets black
+            if (first_player == fd2) {
+                shared_state->gomoku_stone_color[fd2] = GOMOKU_BLACK;
+                shared_state->gomoku_stone_color[fd1] = GOMOKU_WHITE;
+            }
+        }
+
+        // Setup splitbrain action tracking
+        if (game_type == "splitbrain") {
+            shared_state->splitbrain_bomb_done[fd1] = false;
+            shared_state->splitbrain_gomoku_done[fd1] = false;
+            shared_state->splitbrain_bomb_done[fd2] = false;
+            shared_state->splitbrain_gomoku_done[fd2] = false;
+        }
 
         auto c1 = shared_state->conn_list.find(fd1);
         auto c2 = shared_state->conn_list.find(fd2);
@@ -455,46 +506,64 @@ void reactor::match_players() {
 
         shared_state->readyfd_users.erase(fd1);
         shared_state->readyfd_users.erase(fd2);
+        shared_state->ready_game_types.erase(fd1);
+        shared_state->ready_game_types.erase(fd2);
     }
 
-    enqueue_send_to_fd(fd1, "game_start," + name2 + "," + (first_player == fd1 ? "1" : "0"));
-    enqueue_send_to_fd(fd2, "game_start," + name1 + "," + (first_player == fd2 ? "1" : "0"));
-	ThreadPool::instance().submit([=]() {log_info("match success: %d (%s) vs %d (%s), first player %d",
-		fd1, name1.c_str(), fd2, name2.c_str(), first_player); });
+    enqueue_send_to_fd(fd1, "game_start," + game_type + "," + name2 + "," + (first_player == fd1 ? "1" : "0"));
+    enqueue_send_to_fd(fd2, "game_start," + game_type + "," + name1 + "," + (first_player == fd2 ? "1" : "0"));
+	ThreadPool::instance().submit([=]() {log_info("match success: %d (%s) vs %d (%s), game=%s, first=%d",
+		fd1, name1.c_str(), fd2, name2.c_str(), game_type.c_str(), first_player); });
 }
 
 void reactor::check_matched_players() {
     std::vector<std::pair<int, int>> battles;
+    std::vector<std::pair<int, int>> gomoku_battles;
 
     {
         std::scoped_lock lock(connlist_mutex, game_state_mutex);
         for (const auto& pair : shared_state->matched_users) {
             int a = pair.first;
             int b = pair.second;
-            if (a > b) {
-                continue;
-            }
+            if (a > b) continue;
 
             auto ia = shared_state->conn_list.find(a);
             auto ib = shared_state->conn_list.find(b);
-            if (ia == shared_state->conn_list.end() || ib == shared_state->conn_list.end()) {
-                continue;
-            }
+            if (ia == shared_state->conn_list.end() || ib == shared_state->conn_list.end()) continue;
 
-            if (ia->second.is_start_game && ib->second.is_start_game) {
+            std::string gt = shared_state->match_game_type[a];
+
+            if (gt == "gomoku") {
+                // Gomoku: no init needed, start immediately
                 if (!ia->second.isplaying || !ib->second.isplaying) {
                     ia->second.isplaying = true;
                     ib->second.isplaying = true;
                     int min_fd = std::min(a, b);
                     shared_state->game_turn_start[min_fd] = time(nullptr);
-                    battles.emplace_back(a, b);
+                    gomoku_battles.emplace_back(a, b);
+                }
+            } else {
+                // Bombing / splitbrain: wait for both to send init
+                if (ia->second.is_start_game && ib->second.is_start_game) {
+                    if (!ia->second.isplaying || !ib->second.isplaying) {
+                        ia->second.isplaying = true;
+                        ib->second.isplaying = true;
+                        int min_fd = std::min(a, b);
+                        shared_state->game_turn_start[min_fd] = time(nullptr);
+                        battles.emplace_back(a, b);
+                    }
                 }
             }
         }
     }
 
     for (const auto& battle : battles) {
-		ThreadPool::instance().submit([=]() {log_info("battle start: %d vs %d", battle.first, battle.second); });
+        ThreadPool::instance().submit([=]() {log_info("battle start: %d vs %d", battle.first, battle.second); });
+        enqueue_send_to_fd(battle.first, "battle_start");
+        enqueue_send_to_fd(battle.second, "battle_start");
+    }
+    for (const auto& battle : gomoku_battles) {
+        ThreadPool::instance().submit([=]() {log_info("gomoku battle start: %d vs %d", battle.first, battle.second); });
         enqueue_send_to_fd(battle.first, "battle_start");
         enqueue_send_to_fd(battle.second, "battle_start");
     }
@@ -509,7 +578,17 @@ void reactor::check_timeouts() {
         for (auto it = shared_state->game_turn_start.begin(); it != shared_state->game_turn_start.end();) {
             int min_fd = it->first;
             time_t start = it->second;
-            if (now - start <= 20) {
+
+            // Different timeout per game type
+            int timeout_sec = 20;
+            {
+                auto gt_it = shared_state->match_game_type.find(min_fd);
+                if (gt_it != shared_state->match_game_type.end() && gt_it->second == "splitbrain") {
+                    timeout_sec = 30;
+                }
+            }
+
+            if (now - start <= timeout_sec) {
                 ++it;
                 continue;
             }
@@ -531,7 +610,7 @@ void reactor::check_timeouts() {
                 outs.emplace_back(fd1, "gameover,win,timeout");
                 outs.emplace_back(fd2, "gameover,lose,timeout");
             }
-			ThreadPool::instance().submit([=]() {log_info("timeout: player %d timed out, winner %d", current, (current == fd1 ? fd2 : fd1)); });
+            ThreadPool::instance().submit([=]() {log_info("timeout: player %d timed out, winner %d", current, (current == fd1 ? fd2 : fd1)); });
 
             auto c1 = shared_state->conn_list.find(fd1);
             auto c2 = shared_state->conn_list.find(fd2);
@@ -550,6 +629,15 @@ void reactor::check_timeouts() {
             shared_state->matched_users.erase(fd2);
             shared_state->turn_owner.erase(fd1);
             shared_state->turn_owner.erase(fd2);
+            shared_state->match_game_type.erase(fd1);
+            shared_state->match_game_type.erase(fd2);
+            shared_state->gomoku_stone_color.erase(fd1);
+            shared_state->gomoku_stone_color.erase(fd2);
+            shared_state->splitbrain_bomb_done.erase(fd1);
+            shared_state->splitbrain_gomoku_done.erase(fd1);
+            shared_state->splitbrain_bomb_done.erase(fd2);
+            shared_state->splitbrain_gomoku_done.erase(fd2);
+            shared_state->gomoku_boards.erase(min_fd);
             it = shared_state->game_turn_start.erase(it);
         }
     }

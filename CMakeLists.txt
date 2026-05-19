@@ -15,7 +15,8 @@ pkg_check_modules(MYSQLCLIENT REQUIRED mysqlclient)
 add_executable(main main.cpp reactor.cpp Logger.cpp
     handlers/auth_handler.cpp
     handlers/chat_handler.cpp
-    handlers/game_handler.cpp)
+    handlers/game_handler.cpp
+    handlers/gomoku_handler.cpp)
 
 # 头文件搜索路径
 target_include_directories(main PRIVATE ${MYSQLCLIENT_INCLUDE_DIRS})
